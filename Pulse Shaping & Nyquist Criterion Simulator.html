@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pulse Shaping &amp; Nyquist Criterion Simulator</title>
+<style>
+:root {
+  --bg:#f7f7f5; --panel:#ffffff; --border:#dcdad3; --text:#1a1a1a; --sub:#5a5a55;
+  --accent:#185fa5; --good:#3b6d11; --bad:#a32d2d;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg:#17171a; --panel:#232326; --border:#3a3a3d; --text:#eee; --sub:#aaa;
+  --accent:#5aa4ec; --good:#97c459; --bad:#f09595; }
+}
+:root[data-theme="dark"] { --bg:#17171a; --panel:#232326; --border:#3a3a3d; --text:#eee; --sub:#aaa;
+  --accent:#5aa4ec; --good:#97c459; --bad:#f09595; }
+html{scroll-padding-top:env(safe-area-inset-top,0px);}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.5;}
+.wrap{max-width:960px;margin:0 auto;padding:1.5rem 1rem 3rem;}
+h1{font-size:1.3rem;margin:0 0 .25rem;}
+h2{font-size:1.05rem;margin:1.6rem 0 .5rem;color:var(--accent);}
+p.sub{color:var(--sub);margin:0 0 1rem;font-size:.9rem;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:1rem;}
+.row{display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end;margin-bottom:.5rem;}
+.field{display:flex;flex-direction:column;font-size:.8rem;color:var(--sub);gap:.25rem;}
+.field select,.field input[type=number]{padding:.35rem .4rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);width:130px;}
+.field input[type=range]{width:160px;}
+button{background:var(--accent);color:#fff;border:none;padding:.5rem .9rem;border-radius:6px;font-size:.85rem;cursor:pointer;}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent);}
+.chartbox{position:relative;height:240px;margin:.5rem 0 1rem;}
+table{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:.5rem;}
+th,td{border-bottom:1px solid var(--border);padding:.3rem .4rem;text-align:center;}
+th{color:var(--sub);font-weight:500;}
+.pill{display:inline-block;padding:.15rem .55rem;border-radius:20px;font-size:.75rem;font-weight:600;}
+.pill.good{background:rgba(59,109,17,.15);color:var(--good);}
+.pill.bad{background:rgba(163,45,45,.15);color:var(--bad);}
+.note{font-size:.85rem;color:var(--sub);border-left:3px solid var(--accent);padding:.4rem .7rem;background:rgba(24,95,165,.06);border-radius:0 6px 6px 0;margin:.5rem 0;}
+.interp{font-size:.88rem;margin-top:.4rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Experiment 7 — Pulse shaping &amp; the Nyquist criterion</h1>
+<p class="sub">Rectangular, sinc, raised-cosine (RC) and root-raised-cosine (RRC) pulses are built from their closed-form time-domain expressions, with removable singularities handled explicitly, and compared in time and frequency across roll-off α.</p>
+
+<div class="card">
+  <h2 style="margin-top:0">1 · Roll-off &amp; parameters</h2>
+  <div class="row">
+    <div class="field"><label>Roll-off α</label><input id="alpha" type="range" min="0" max="1" step="0.05" value="0.5"><span id="alphaVal">0.50</span></div>
+    <button class="sec" onclick="setAlpha(0)">α=0</button>
+    <button class="sec" onclick="setAlpha(0.25)">α=0.25</button>
+    <button class="sec" onclick="setAlpha(0.5)">α=0.5</button>
+    <button class="sec" onclick="setAlpha(1)">α=1</button>
+    <button id="runAll">Run all plots</button>
+  </div>
+  <div class="note">Expected: as α grows from 0 to 1, the pulse decays faster and its sidelobes shrink in time (less sensitivity to timing jitter), while occupied bandwidth grows from the minimum 1/(2T) toward 1/T — the classic bandwidth-vs-timing trade-off. The sinc pulse (α=0 limit) is the most compact in frequency but has the slowest-decaying tails in time; the rectangular pulse is the reverse.</div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">2 · Pulse (impulse) responses</h2>
+  <div class="chartbox"><canvas id="chartTime" role="img" aria-label="Time-domain pulse responses for rectangular, sinc, raised-cosine and root-raised-cosine pulses">Pulse responses.</canvas></div>
+  <div class="interp" id="timeInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">3 · Frequency responses</h2>
+  <div class="chartbox"><canvas id="chartFreq" role="img" aria-label="Frequency responses of rectangular, sinc, raised-cosine and root-raised-cosine pulses">Frequency responses.</canvas></div>
+  <div class="interp" id="freqInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">4 · Zero-crossing verification (raised-cosine)</h2>
+  <div id="zcTable"></div>
+  <div class="interp" id="zcInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">5 · Upsampled symbol train &amp; pulse-shaped stream</h2>
+  <div class="row">
+    <div class="field"><label>Shaping pulse</label>
+      <select id="shapePulse"><option value="rc" selected>Raised-cosine</option><option value="rrc">Root-raised-cosine</option><option value="sinc">Sinc</option><option value="rect">Rectangular</option></select>
+    </div>
+    <div class="field"><label>Symbols</label><input id="nsym" type="number" value="10" min="4" max="20"></div>
+    <button id="runShape">Shape stream</button>
+  </div>
+  <div class="chartbox"><canvas id="chartStream" role="img" aria-label="Pulse-shaped waveform built from an upsampled random symbol impulse train">Pulse-shaped stream.</canvas></div>
+  <div class="interp" id="shapeInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">6 · Cascaded Tx/Rx RRC filters (mandatory validation)</h2>
+  <p class="sub" style="margin-top:-.3rem">Convolving a root-raised-cosine transmit filter with a matched root-raised-cosine receive filter should reproduce the raised-cosine response and satisfy the Nyquist zero-ISI criterion. The overall response is sampled at integer symbol intervals below.</p>
+  <div class="chartbox"><canvas id="chartCascade" role="img" aria-label="Cascaded RRC times RRC response overlaid on the ideal raised-cosine pulse">RRC cascade vs ideal RC.</canvas></div>
+  <div id="cascadeTable"></div>
+  <div class="interp" id="cascadeInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">7 · Bandwidth versus roll-off</h2>
+  <div class="chartbox"><canvas id="chartBW" role="img" aria-label="Transmission bandwidth versus raised-cosine roll-off factor">Bandwidth vs roll-off.</canvas></div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const T = 1; // normalized symbol period
+function isDark(){ return matchMedia('(prefers-color-scheme: dark)').matches; }
+const ink = () => isDark() ? '#eee' : '#1a1a1a';
+const grid = () => isDark() ? '#3a3a3d' : '#e1e0d9';
+
+function sinc(x){ if(Math.abs(x)<1e-9) return 1; return Math.sin(Math.PI*x)/(Math.PI*x); }
+
+function rect(t){ return Math.abs(t/T) <= 0.5 ? 1 : 0; }
+
+function rc(t, a){
+  const x = t/T;
+  if(a===0) return sinc(x);
+  const denomTerm = 2*a*x;
+  if(Math.abs(Math.abs(denomTerm)-1) < 1e-6){
+    return (Math.PI/4)*sinc(1/(2*a));
+  }
+  return sinc(x) * Math.cos(Math.PI*a*x) / (1 - denomTerm*denomTerm);
+}
+
+function rrc(t, a){
+  const x = t/T;
+  if(Math.abs(x) < 1e-9) return (1/T)*(1 - a + 4*a/Math.PI);
+  if(a>0 && Math.abs(Math.abs(x) - 1/(4*a)) < 1e-6){
+    return (a/(T*Math.SQRT2)) * ( (1+2/Math.PI)*Math.sin(Math.PI/(4*a)) + (1-2/Math.PI)*Math.cos(Math.PI/(4*a)) );
+  }
+  const num = Math.sin(Math.PI*x*(1-a)) + 4*a*x*Math.cos(Math.PI*x*(1+a));
+  const den = Math.PI*x*(1-(4*a*x)*(4*a*x));
+  return (1/T) * num/den;
+}
+
+function rcFreq(f, a){
+  const af = Math.abs(f);
+  const lo = (1-a)/(2*T), hi = (1+a)/(2*T);
+  if(a===0) return af<=0.5/T ? 1 : 0;
+  if(af<=lo) return 1;
+  if(af<=hi) return 0.5*(1+Math.cos(Math.PI*T/a*(af-lo)));
+  return 0;
+}
+function rrcFreq(f,a){ return Math.sqrt(rcFreq(f,a)); }
+function rectFreq(f){ return sinc(f*T); }
+function sincFreq(f){ return Math.abs(f)<=0.5/T ? 1 : 0; }
+
+let charts = {};
+function upsertChart(id, config){ if(charts[id]) charts[id].destroy(); charts[id]=new Chart(document.getElementById(id), config); }
+function lineOpts(xLabel,yLabel){
+  return { responsive:true, maintainAspectRatio:false, animation:false,
+    scales:{ x:{ ticks:{color:ink()}, grid:{color:grid()}, title:{display:true,text:xLabel,color:ink()} },
+             y:{ ticks:{color:ink()}, grid:{color:grid()}, title:{display:true,text:yLabel,color:ink()} } },
+    plugins:{ legend:{labels:{color:ink()}} } };
+}
+
+document.getElementById('alpha').addEventListener('input', e=>{
+  document.getElementById('alphaVal').textContent = parseFloat(e.target.value).toFixed(2);
+});
+function setAlpha(v){ document.getElementById('alpha').value=v; document.getElementById('alphaVal').textContent=v.toFixed(2); }
+
+function currentAlpha(){ return +document.getElementById('alpha').value; }
+
+function plotTime(){
+  const a = currentAlpha();
+  const span = 6, N = 400;
+  const labels=[], rectD=[], sincD=[], rcD=[], rrcD=[];
+  for(let i=0;i<=N;i++){
+    const t = -span + (2*span*i/N);
+    labels.push(t.toFixed(2));
+    rectD.push(rect(t));
+    sincD.push(sinc(t/T));
+    rcD.push(rc(t,a));
+    rrcD.push(rrc(t,a));
+  }
+  upsertChart('chartTime', { type:'line', data:{ labels, datasets:[
+    {label:'Rectangular', data:rectD, borderColor:'#eb6834', borderWidth:1.2, pointRadius:0},
+    {label:'Sinc', data:sincD, borderColor:'#2a78d6', borderWidth:1.2, pointRadius:0},
+    {label:'Raised-cosine (α)', data:rcD, borderColor:'#1baf7a', borderWidth:1.8, pointRadius:0},
+    {label:'Root-raised-cosine (α)', data:rrcD, borderColor:'#6250d6', borderWidth:1.2, borderDash:[4,3], pointRadius:0}
+  ]}, options: lineOpts('t / T','amplitude') });
+  document.getElementById('timeInterp').innerHTML = `<b>Observation:</b> the sinc and RC(α) pulses cross zero at every nonzero integer t/T, satisfying Nyquist's zero-ISI criterion, while the rectangular pulse is confined to one symbol and never overlaps its neighbors at all — a trivial (but bandwidth-hungry) way to avoid ISI. RRC(α) does not itself cross zero at every integer — that property only appears once two RRC filters are cascaded (see section 6).`;
+}
+
+function plotFreq(){
+  const a = currentAlpha();
+  const fmax = 2.2, N=300;
+  const labels=[], rectD=[], sincD=[], rcD=[], rrcD=[];
+  for(let i=0;i<=N;i++){
+    const f = fmax*i/N;
+    labels.push(f.toFixed(2));
+    rectD.push(rectFreq(f));
+    sincD.push(sincFreq(f));
+    rcD.push(rcFreq(f,a));
+    rrcD.push(rrcFreq(f,a));
+  }
+  upsertChart('chartFreq', { type:'line', data:{ labels, datasets:[
+    {label:'Rectangular', data:rectD, borderColor:'#eb6834', borderWidth:1.2, pointRadius:0},
+    {label:'Sinc (brick-wall)', data:sincD, borderColor:'#2a78d6', borderWidth:1.2, pointRadius:0},
+    {label:'Raised-cosine (α)', data:rcD, borderColor:'#1baf7a', borderWidth:1.8, pointRadius:0},
+    {label:'Root-raised-cosine (α)', data:rrcD, borderColor:'#6250d6', borderWidth:1.2, borderDash:[4,3], pointRadius:0}
+  ]}, options: lineOpts('f · T','magnitude') });
+  document.getElementById('freqInterp').innerHTML = `<b>Observation:</b> the sinc pulse occupies the minimum possible bandwidth (a brick wall at f·T = 0.5) with no roll-off, while the rectangular pulse's spectrum decays slowly with visible sidelobes — confirming the inverse time/frequency compactness relationship. RC(α) transitions smoothly from 1 to 0 between f·T=(1-α)/2 and (1+α)/2; RRC(α) is its square root, so cascading two RRC stages multiplies magnitudes and reproduces the RC spectrum exactly.`;
+}
+
+function plotZeroCrossing(){
+  const a = currentAlpha();
+  let rows = '<table><tr><th>n (t=nT)</th>'; for(let n=-5;n<=5;n++) rows+=`<th>${n}</th>`; rows+='</tr><tr><td>RC(α) value</td>';
+  let maxDev = 0;
+  for(let n=-5;n<=5;n++){
+    const v = rc(n*T, a);
+    if(n!==0) maxDev = Math.max(maxDev, Math.abs(v));
+    rows += `<td>${v.toFixed(4)}</td>`;
+  }
+  rows += '</tr></table>';
+  document.getElementById('zcTable').innerHTML = rows;
+  const pass = maxDev < 0.01;
+  document.getElementById('zcInterp').innerHTML = `<span class="pill ${pass?'good':'bad'}">${pass?'Zero crossings confirmed: |RC(nT)| < 0.01 for all n≠0':'Deviation from zero detected at some n≠0 (max '+maxDev.toFixed(4)+')'}</span> `+
+    (pass? 'This agrees with the Nyquist criterion: a raised-cosine pulse contributes zero intersymbol interference at every other symbol-sampling instant.' :
+    'Diagnostic: check whether α is very close to 0 — near α=0 the RC pulse approaches the slowly-decaying sinc, so floating-point evaluation right at the removable singularity (t/T = ±1/2α) is the most likely source of the residual error, not a modeling mistake.');
+}
+
+function plotBandwidth(){
+  const N=50, labels=[], bw=[];
+  for(let i=0;i<=N;i++){ const a=i/N; labels.push(a.toFixed(2)); bw.push((1+a)/(2*T)); }
+  upsertChart('chartBW', { type:'line', data:{labels, datasets:[{label:'Transmission bandwidth (×1/T)', data:bw, borderColor:'#0f6e56', borderWidth:1.8, pointRadius:0}]},
+    options: lineOpts('roll-off α','bandwidth · T') });
+}
+
+// discrete sampling helpers for convolution-based sections
+function samplePulse(kind, a, sps, spanSym){
+  const n = Math.round(spanSym*sps);
+  const taps = [];
+  for(let i=-n;i<=n;i++){
+    const t = i*T/sps;
+    let v;
+    if(kind==='rect') v = rect(t);
+    else if(kind==='sinc') v = sinc(t/T);
+    else if(kind==='rc') v = rc(t,a);
+    else v = rrc(t,a);
+    taps.push(v);
+  }
+  return taps; // length 2n+1, center index n
+}
+
+function convolve(x, h){
+  const out = new Array(x.length + h.length - 1).fill(0);
+  for(let i=0;i<x.length;i++){ if(x[i]===0) continue; for(let j=0;j<h.length;j++) out[i+j]+=x[i]*h[j]; }
+  return out;
+}
+
+document.getElementById('runShape').onclick = ()=>{
+  const a = currentAlpha();
+  const kind = document.getElementById('shapePulse').value;
+  const nsym = +document.getElementById('nsym').value;
+  const sps = 16, spanSym = 6;
+  const symbols = Array.from({length:nsym}, ()=> Math.random()<0.5?-1:1);
+  const impTrain = new Array(nsym*sps).fill(0);
+  symbols.forEach((s,i)=> impTrain[i*sps]=s);
+  const taps = samplePulse(kind, a, sps, spanSym);
+  const shaped = convolve(impTrain, taps).map(v=>v/1); // dt scaling omitted (normalized comparison)
+  const center = Math.round(spanSym*sps);
+  const labels = shaped.map((_,i)=>((i-center)/sps).toFixed(2));
+  upsertChart('chartStream', { type:'line', data:{labels, datasets:[{label:'Pulse-shaped waveform', data:shaped, borderColor:'#d95926', borderWidth:1.3, pointRadius:0}]},
+    options: lineOpts('t / T','amplitude') });
+  document.getElementById('shapeInterp').innerHTML = `<b>Observation:</b> the impulse train (task 23) has one nonzero sample every ${sps} samples (one per symbol period); after convolving with the ${kind.toUpperCase()} pulse, sampling the shaped waveform back at the symbol centers should recover the original ±1 symbols when the pulse satisfies Nyquist's criterion (sinc, RC), but not necessarily for rectangular or a lone RRC pulse.`;
+};
+
+function plotCascade(){
+  const a = currentAlpha();
+  const sps = 16, spanSym = 6;
+  const rrcTaps = samplePulse('rrc', a, sps, spanSym);
+  const dt = T/sps;
+  const cascadeRaw = convolve(rrcTaps, rrcTaps).map(v=>v*dt); // approximate continuous convolution
+  const center = Math.round(cascadeRaw.length/2)-1;
+  // normalize peak to 1 for comparison with RC(0)=1
+  const peak = cascadeRaw[center] || 1;
+  const cascade = cascadeRaw.map(v=>v/peak);
+  const idealRC = [];
+  for(let i=0;i<cascade.length;i++){ const t=(i-center)*dt; idealRC.push(rc(t,a)); }
+  const labels = cascade.map((_,i)=>((i-center)*dt).toFixed(2));
+  upsertChart('chartCascade', { type:'line', data:{labels, datasets:[
+    {label:'RRC ⊛ RRC (normalized)', data:cascade, borderColor:'#6250d6', borderWidth:1.6, pointRadius:0},
+    {label:'Ideal RC(α)', data:idealRC, borderColor:'#1baf7a', borderWidth:1.2, borderDash:[4,3], pointRadius:0}
+  ]}, options: lineOpts('t / T','amplitude') });
+
+  let rows = '<table><tr><th>n (t=nT)</th>'; for(let n=-5;n<=5;n++) rows+=`<th>${n}</th>`; rows+='</tr><tr><td>Cascade value</td>';
+  let maxDev=0;
+  for(let n=-5;n<=5;n++){
+    const idx = center + n*sps;
+    const v = (idx>=0 && idx<cascade.length) ? cascade[idx] : NaN;
+    if(n!==0 && !isNaN(v)) maxDev = Math.max(maxDev, Math.abs(v));
+    rows += `<td>${isNaN(v)?'—':v.toFixed(4)}</td>`;
+  }
+  rows += '</tr></table>';
+  document.getElementById('cascadeTable').innerHTML = rows;
+  const pass = maxDev < 0.03;
+  document.getElementById('cascadeInterp').innerHTML = `<span class="pill ${pass?'good':'bad'}">${pass?'Cascade confirmed ISI-free at integer symbol spacing (max |value| at n≠0 = '+maxDev.toFixed(4)+')':'Residual ISI detected (max |value| at n≠0 = '+maxDev.toFixed(4)+')'}</span> `+
+    (pass? 'This agrees with theory: a matched pair of root-raised-cosine filters splits the raised-cosine response evenly between transmitter and receiver while preserving the overall Nyquist, zero-ISI shape.' :
+    'Diagnostic: the discrepancy is consistent with truncating the RRC impulse response to a finite ±6-symbol window before convolving — increase the truncation span (or sps) to shrink this numerical edge effect, rather than suspecting the RRC formula itself.');
+}
+
+document.getElementById('runAll').onclick = ()=>{ plotTime(); plotFreq(); plotZeroCrossing(); plotCascade(); };
+document.getElementById('alpha').addEventListener('change', ()=>{ plotTime(); plotFreq(); plotZeroCrossing(); plotCascade(); });
+
+plotTime(); plotFreq(); plotZeroCrossing(); plotBandwidth(); plotCascade();
+document.getElementById('runShape').click();
+</script>
+</body>
+</html>
